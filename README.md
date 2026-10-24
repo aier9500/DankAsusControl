@@ -1,64 +1,61 @@
-# Dank ASUS Control Center for DankMaterialShell
-Continuation of [ASUS Control Center](https://github.com/pseudofractal/AsusControl)
+# Dank ASUS Control Center
 
-Power & GPU Management for ASUS Laptops.  
-A plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell)
+A [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) bar widget for ASUS
+laptops. One pill, one popout: power profile, battery wattage, dGPU power state, cardwire GPU
+mode, charge limit. It replaces ROG Control Center for daily use; keep ROG Control Center only
+for the one-time EPP / throttle-policy setup.
 
-<div align="center">
-  <img src="assets/popup.png" alt="Dank Asus Control Center Popup"/>
-</div>
+Continuation of [ASUS Control Center](https://github.com/pseudofractal/AsusControl), merged with
+[dgpu-sleep-monitor](https://github.com/xantrk/dgpu-sleep-monitor).
 
-**Dank Asus Control Center** is a plugin for DankMaterialShell that integrates `asusctl` and `supergfxctl` directly into your desktop interface. It provides a seamless way to interact with `asusctl` & `supergfxctl` without opening your terminal.
+## Bar pill
 
-## Features
+`<profile icon>  11.8 W │ D3cold`
 
-- **Power Profiles**: Switch between *Quiet*, *Balanced*, and *Performance* modes on the fly.
-- **GPU Switching**: Toggle *Integrated*, *Hybrid*, and *Dedicated* graphics modes.
-- **Auto-Logout**: Automatically detects your session (Hyprland, Niri, Sway, KDE, Gnome, etc.) and performs the required logout when switching GPU modes.
-- **Battery Charge Tray Icon**: Shows current battery charge percentage as a tray icon
-- **Battery Charge Limit/One Shot**: Allows you to change the charge limit for your battery, while One Shot will temporarily remove this limit in order to charge your battery to 100%
+- Icon: current `asusctl` profile (Quiet / Balanced / Performance).
+- Wattage: battery draw from sysfs.
+- D-state: dGPU PCI power state. Red when the dGPU is awake on battery.
+
+## Popout
+
+| Section       | Source                                   | Shown when              |
+| ------------- | ---------------------------------------- | ----------------------- |
+| Battery       | `/sys/class/power_supply/BAT*`           | a battery exists        |
+| Power Profile | `asusctl profile`                        | `asusctl` installed     |
+| GPU           | PCI sysfs + `cardwire get` / `set`       | dGPU found or cardwire  |
+| Charge Limit  | `asusctl battery limit` / `oneshot`      | `asusctl` + battery     |
+
+The ⚡ button next to the slider is **One Shot**: charge to 100% once, then the limit resumes.
 
 ## Requirements
 
-This plugin requires the following to be installed on your system:
+- [asusctl](https://github.com/OpenGamingCollective/asusctl) with `asusd` running.
+- [cardwire](https://github.com/OpenGamingCollective/cardwire) for GPU mode switching
+  (optional; the section hides without it). `supergfxctl` is not supported — it is archived.
 
-1.  **[DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell)**: The shell environment.
-2.  **[asusctl](https://gitlab.com/asus-linux/asusctl)**: For power profile management.
-3.  **[supergfxctl](https://gitlab.com/asus-linux/supergfxctl)**: For GPU switching.
-4.  **[upower](https://upower.freedesktop.org/)**: For Battery stats.
-
-> **Note**: Ensure the `supergfxd` service is active and your user has permissions to control it (usually by being part of the `asus-users` group).
-
-## Installation
-
-### Manual Installation
-
-Clone this repository into your DankMaterialShell plugins directory (typically located at `~/.config/DankMaterialShell/plugins` depending on your setup).
+## Install
 
 ```bash
 cd ~/.config/DankMaterialShell/plugins
-git clone https://github.com/shazzaam7/DankAsusControl.git
+git clone https://github.com/aier9500/DankAsusControl.git dankAsusControlCenter
+dms ipc call plugins reload dankAsusControlCenter
 ```
 
-Once installed, restart DankMaterialShell using `dms restart`.
+Then add `dankAsusControlCenter` to a bar section in DMS settings.
 
-## Usage
+## Settings
 
-1.  **Add to Layout**: Add the `asusControlCenter` widget to configuration in DMS.
-2.  **Interact**:
-    *   Click the icon to open the popout menu.
-    *   Select a **Power Profile** to apply it immediately.
-    *   Select a **GPU Mode** to switch graphics cards.
-        *   ⚠️ **Warning**: Switching GPU modes requires a session restart. The plugin will notify you and log you out automatically after 5 seconds.
+| Setting         | Default | Meaning                                                   |
+| --------------- | ------- | --------------------------------------------------------- |
+| Show wattage    | on      | Battery draw in the pill                                  |
+| Show dGPU state | on      | D-state in the pill                                       |
+| Refresh interval| 5 s     | Poll period for everything                                |
+| PCI address     | auto    | dGPU address; auto picks the display device that is not the boot VGA |
 
-## Configuration
+## Open the popout from a key
 
-The widget attempts to auto-detect your desktop environment to handle logouts. If you use a custom setup, you can modify the `desktopSpecificCommands` map in `AsusControlCenter.qml`:
-
-```qml
-readonly property var desktopSpecificCommands: {
-  "hyprland": ["hyprctl", "dispatch", "exit"],
-  "niri":     ["niri", "msg", "action", "quit"],
-  // ... add your custom logout command here
-}
+```bash
+dms ipc call widget toggle dankAsusControlCenter
 ```
+
+Bind that to any key or hardware button.

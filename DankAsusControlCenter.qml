@@ -9,39 +9,63 @@ import qs.Modules.Plugins
 PluginComponent {
     id: root
 
-    property string activeProfile: "Balanced"
+    property var popoutService: null
+
+    // --- Settings ---
+    property int refreshInterval: (pluginData.refreshInterval || 5) * 1000
+    property bool showWattage: pluginData.showWattage ?? true
+    property bool showDgpuState: pluginData.showDgpuState ?? true
+    // Empty = auto-detect (display-class PCI device that is not the boot VGA)
+    readonly property string pciAddr: pluginData.pciAddress || ""
+
+    // --- asusctl ---
     property string asusCtlInfo: ""
-    property string supergfxCtlInfo: ""
-    property string activeGpuMode: "Unknown"
-    property var supportedGpuModes: []
+    property string activeProfile: "Balanced"
     property var supportedPowerProfiles: []
-    property int batteryLevel: 0
     property int batteryLimit: 100
-    property string batteryStatus: "Unknown"
-    property bool showBatteryIconStash: pluginData.showBatteryIcon || false
-    property string upowerInfo: ""
-    readonly property bool showBatteryIcon: showBatteryIconStash && !upowerInfo.includes("MISSING") && upowerInfo.length > 0
 
-    property real batteryEnergy: 0
-    property real batteryEnergyFull: 0
-    property real batteryEnergyDesign: 0
-    property real batteryVoltage: 0
-    property real batteryCapacity: 0
-    property bool panelOverdriveStash: pluginData.panelOverdrive || false
-    property bool screenAutoBrightnessStash: pluginData.screenAutoBrightness || false
-    property bool panelOverdriveAvailable: false
-    property bool screenAutoBrightnessAvailable: false
-    property bool panelOverdriveMatched: false
-    property bool screenAutoBrightnessMatched: false
-    // Debug flags to force missing detection
-    property bool debugForceAsusMissing: false
-    property bool debugForceSupergfxMissing: false
-    property bool debugForceUpowerMissing: false
+    // --- cardwire ---
+    property string cardwireInfo: ""
+    property string cardwireMode: "unknown"
+    property var supportedCardwireModes: []
+    readonly property bool cardwireAvailable: cardwireInfo.length > 0 && cardwireInfo !== "MISSING"
+    readonly property bool asusCtlAvailable: asusCtlInfo.length > 0 && asusCtlInfo !== "MISSING"
 
-    readonly property color colorPerf: pluginData.useThemeColors !== false ? Theme[pluginData.colorPerfRole || "primary"] : (pluginData.colorPerf || "#F38BA8")
-    readonly property color colorBal: pluginData.useThemeColors !== false ? Theme[pluginData.colorBalRole || "primary"] : (pluginData.colorBal || "#CBA6F7")
-    readonly property color colorQuiet: pluginData.useThemeColors !== false ? Theme[pluginData.colorQuietRole || "primary"] : (pluginData.colorQuiet || "#94E2D5")
-    readonly property color colorGpu: pluginData.useThemeColors !== false ? Theme[pluginData.colorGpuRole || "primary"] : (pluginData.colorGpu || "#89B4FA")
+    // --- Battery (sysfs) ---
+    property string batteryWattage: "..."
+    property bool hasBattery: false
+    property string acOnline: "..."
+    property string batStatus: "..."
+    property int batteryLevel: 0
+    property int batteryHealthPct: -1
+    readonly property bool isOnACPower: acOnline === "1"
+    readonly property bool onBattery: !isOnACPower && batStatus !== "Full"
+
+    // --- dGPU (sysfs) ---
+    property string dgpuAddr: ""
+    property string dgpuState: "..."
+    property string gpuRuntimeStatus: "..."
+    property string gpuPowerControl: "..."
+    readonly property bool dgpuIdle: dgpuState === "D3cold" || dgpuState === "D3" || dgpuState === "D3hot"
+    readonly property bool dgpuKnown: dgpuState !== "..." && dgpuState !== "?"
+    readonly property color dgpuColor: dgpuKnown && !dgpuIdle && onBattery ? Theme.error : Theme.surfaceText
+
+    // ---------------- asusctl processes ----------------
+
+    Process {
+        id: procAsusCtlInfo
+        command: ["sh", "-c", "asusctl info 2>/dev/null || echo MISSING"]
+        stdout: SplitParser {
+            onRead: line => {
+                var trimmed = line.trim();
+                var match = trimmed.match(/Software version:\s*([\d\.]+)/);
+                if (match)
+                    root.asusCtlInfo = match[1];
+                else if (trimmed === "MISSING")
+                    root.asusCtlInfo = "MISSING";
+            }
+        }
+    }
 
     Process {
         id: procPowerGet
@@ -49,37 +73,8 @@ PluginComponent {
         stdout: SplitParser {
             onRead: line => {
                 var match = line.trim().match(/Active profile:\s*(\w+)/);
-                if (match) {
+                if (match)
                     root.activeProfile = match[1];
-                }
-            }
-        }
-    }
-
-    Process {
-        id: procGpuGet
-        command: ["supergfxctl", "-g"]
-        stdout: SplitParser {
-            onRead: line => {
-                root.activeGpuMode = line.trim();
-            }
-        }
-    }
-
-    Process {
-        id: procGpuList
-        command: ["supergfxctl", "-s"]
-        onRunningChanged: {
-            if (!running) {
-                root.supportedGpuModes = root.supportedGpuModes.filter(p => p.length > 0);
-            }
-        }
-        stdout: SplitParser {
-            onRead: line => {
-                var clean = line.replace(/[\[\]']/g, "").trim();
-                if (clean.length > 0) {
-                    root.supportedGpuModes = clean.split(/,\s*/);
-                }
             }
         }
     }
@@ -88,83 +83,27 @@ PluginComponent {
         id: procProfileList
         command: ["asusctl", "profile", "list"]
         onRunningChanged: {
-            if (!running) {
+            if (!running)
                 root.supportedPowerProfiles = root.supportedPowerProfiles.filter(p => p.length > 0);
-            }
         }
         stdout: SplitParser {
             onRead: line => {
                 var clean = line.trim();
-                if (clean.length > 0 && !root.supportedPowerProfiles.includes(clean)) {
+                if (clean.length > 0 && !root.supportedPowerProfiles.includes(clean))
                     root.supportedPowerProfiles = root.supportedPowerProfiles.concat([clean]);
-                }
             }
         }
     }
 
     Process {
-        id: procBatteryGet
-        command: ["upower", "-b"]
-        stdout: SplitParser {
-            onRead: line => {
-                var trimmed = line.trim();
-
-                var match = trimmed.match(/percentage:\s*(\d+)%/);
-                if (match) {
-                    root.batteryLevel = parseInt(match[1]);
-                }
-
-                match = trimmed.match(/state:\s*(\w+(?:-\w+)?)/);
-                if (match) {
-                    root.batteryStatus = match[1];
-                }
-
-                match = trimmed.match(/energy:\s*([\d,]+)\s*Wh/);
-                if (match) {
-                    root.batteryEnergy = parseFloat(match[1].replace(",", "."));
-                }
-
-                match = trimmed.match(/energy-full:\s*([\d,]+)\s*Wh/);
-                if (match) {
-                    root.batteryEnergyFull = parseFloat(match[1].replace(",", "."));
-                }
-
-                match = trimmed.match(/energy-full-design:\s*([\d,]+)\s*Wh/);
-                if (match) {
-                    root.batteryEnergyDesign = parseFloat(match[1].replace(",", "."));
-                }
-
-                match = trimmed.match(/voltage:\s*([\d,]+)\s*V/);
-                if (match) {
-                    root.batteryVoltage = parseFloat(match[1].replace(",", "."));
-                }
-
-                match = trimmed.match(/capacity:\s*([\d,]+)%/);
-                if (match) {
-                    root.batteryCapacity = parseFloat(match[1].replace(",", "."));
-                }
-            }
+        id: procPowerSet
+        command: ["asusctl", "profile", "set", "Balanced"]
+        stderr: SplitParser {
+            onRead: line => ToastService.showError("ASUS Error", line)
         }
-    }
-
-    // Check if upower is installed and get version
-    Process {
-        id: procUpowerInfo
-        command: ["sh", "-c", "upower -v 2>&1 | head -1 || echo MISSING"]
-        stdout: SplitParser {
-            onRead: line => {
-                if (root.debugForceUpowerMissing) {
-                    root.upowerInfo = "MISSING";
-                    return;
-                }
-                var trimmed = line.trim();
-                if (trimmed === "MISSING") {
-                    root.upowerInfo = "MISSING";
-                } else {
-                    var match = trimmed.match(/^UPower client version\s*([\d.]+)/);
-                    root.upowerInfo = match ? match[1] : trimmed;
-                }
-            }
+        onExited: code => {
+            if (code === 0)
+                procPowerGet.running = true;
         }
     }
 
@@ -174,9 +113,8 @@ PluginComponent {
         stdout: SplitParser {
             onRead: line => {
                 var match = line.trim().match(/Current battery charge limit:\s*(\d+)%/);
-                if (match) {
+                if (match)
                     root.batteryLimit = parseInt(match[1]);
-                }
             }
         }
     }
@@ -202,254 +140,166 @@ PluginComponent {
             onRead: line => ToastService.showError("Battery One Shot Error", line)
         }
         onExited: code => {
-            if (code === 0) {
-                ToastService.showInfo("Battery One Shot", "Temporarily removing charge limit until battery reaches 100%");
-            }
+            if (code === 0)
+                ToastService.showInfo("Battery One Shot", "Charging to 100% once, limit resumes after");
         }
     }
+
+    // ---------------- cardwire processes ----------------
 
     Process {
-        id: procPowerSet
-        command: ["asusctl", "profile", "set", "Balanced"]
-        stderr: SplitParser {
-            onRead: line => ToastService.showError("ASUS Error", line)
-        }
-        onExited: code => {
-            if (code === 0) {
-                ToastService.showInfo("Power", "Profile switched");
-                procPowerGet.running = true;
-            }
-        }
-    }
-
-    // [NOTE] Aggresive Default (Hopefully never gets used.)
-    property var logoutCommand: ["loginctl", "terminate-session", "self"]
-    readonly property var desktopSpecificCommands: {
-        "hyprland": ["hyprctl", "dispatch", "exit"],
-        "niri": ["niri", "msg", "action", "quit"],
-        "sway": ["swaymsg", "exit"],
-        "river": ["riverctl", "exit"],
-        "wayfire": ["wayfire", "exit"],
-        "kde": ["qdbus", "org.kde.Shutdown", "/Shutdown", "logout"],
-        "gnome": ["gnome-session-quit", "--logout", "--no-prompt"]
-    }
-
-    Process {
-        id: procDetectSession
-        command: ["sh", "-c", "echo $XDG_CURRENT_DESKTOP"]
-        // Run Immediately On Load
-        running: true
+        id: procCardwireInfo
+        command: ["sh", "-c", "cardwire --version 2>/dev/null || echo MISSING"]
         stdout: SplitParser {
             onRead: line => {
-                const desktop = line.trim().toLowerCase();
-                console.log("Detected Desktop:", desktop);
-                if (root.desktopSpecificCommands[desktop]) {
-                    root.logoutCommand = root.desktopSpecificCommands[desktop];
-                }
-            }
-        }
-    }
-
-    Process {
-        id: procLogout
-        command: root.logoutCommand
-    }
-
-    Timer {
-        id: logoutDelayTimer
-        interval: 5000
-        repeat: false
-        onTriggered: procLogout.running = true
-    }
-
-    Process {
-        id: procGpuSet
-        command: ["supergfxctl", "-m", "Hybrid"]
-        stderr: SplitParser {
-            onRead: line => ToastService.showError("GPU Error", line)
-        }
-        onExited: code => {
-            if (code === 0) {
-                ToastService.showInfo("GPU Mode Set. Session ending in 5 seconds...");
-                logoutDelayTimer.start();
-            }
-        }
-    }
-
-    Process {
-        id: procPanelOverdriveGet
-        command: ["asusctl", "armoury", "get", "panel_overdrive"]
-        stdout: SplitParser {
-            onRead: line => {
-                var match = line.trim().match(/current:.*\(\s*(\d+)\s*\)/);
-                if (match) {
-                    root.panelOverdriveStash = parseInt(match[1]) === 1;
-                    if (pluginService) {
-                        pluginService.savePluginData(pluginId, "panelOverdrive", root.panelOverdriveStash);
-                    }
-                }
-            }
-        }
-    }
-
-    Process {
-        id: procPanelOverdriveSet
-        command: ["asusctl", "armoury", "set", "panel_overdrive", "0"]
-        stderr: SplitParser {
-            onRead: line => ToastService.showError("Panel Overdrive Error", line)
-        }
-        onExited: code => {
-            if (code === 0) {
-                ToastService.showInfo("Display", "Panel overdrive " + (root.panelOverdriveStash ? "enabled" : "disabled"));
-                procPanelOverdriveGet.running = true;
-            }
-        }
-    }
-
-    Process {
-        id: procScreenAutoBrightnessGet
-        command: ["asusctl", "armoury", "get", "screen_auto_brightness"]
-        stdout: SplitParser {
-            onRead: line => {
-                var match = line.trim().match(/current:.*\(\s*(\d+)\s*\)/);
-                if (match) {
-                    root.screenAutoBrightnessStash = parseInt(match[1]) === 1;
-                    if (pluginService) {
-                        pluginService.savePluginData(pluginId, "screenAutoBrightness", root.screenAutoBrightnessStash);
-                    }
-                }
-            }
-        }
-    }
-
-    Process {
-        id: procScreenAutoBrightnessSet
-        command: ["asusctl", "armoury", "set", "screen_auto_brightness", "0"]
-        stderr: SplitParser {
-            onRead: line => ToastService.showError("Screen Auto Brightness Error", line)
-        }
-        onExited: code => {
-            if (code === 0) {
-                ToastService.showInfo("Display", "Screen auto brightness " + (root.screenAutoBrightnessStash ? "enabled" : "disabled"));
-                procScreenAutoBrightnessGet.running = true;
-            }
-        }
-    }
-
-    // Check if asusctl is installed and get version
-    Process {
-        id: procAsusCtlInfo
-        command: ["sh", "-c", "asusctl info || echo MISSING"]
-        stdout: SplitParser {
-            onRead: line => {
-                if (root.debugForceAsusMissing) {
-                    root.asusCtlInfo = "MISSING";
-                    return;
-                }
-                var trimmed = line.trim();
-                // Look for the line containing the software version
-                var match = trimmed.match(/Software version:\s*([\d\.]+)/);
-                if (match) {
-                    root.asusCtlInfo = match[1];
-                } else if (trimmed === "MISSING") {
-                    root.asusCtlInfo = "MISSING";
-                }
-            }
-        }
-    }
-
-    // Check if supergfxctl is installed and get version
-    Process {
-        id: procSupergfxCtlInfo
-        command: ["sh", "-c", "supergfxctl -v || echo MISSING"]
-        stdout: SplitParser {
-            onRead: line => {
-                if (root.debugForceSupergfxMissing) {
-                    root.supergfxCtlInfo = "MISSING";
-                    return;
-                }
                 var trimmed = line.trim();
                 if (trimmed === "MISSING") {
-                    root.supergfxCtlInfo = "MISSING";
+                    root.cardwireInfo = "MISSING";
                 } else {
-                    // Expected format: "supergfxctl X.Y.Z"
                     var match = trimmed.match(/([\d]+(?:\.[\d]+)*)/);
-                    root.supergfxCtlInfo = match ? match[1] : trimmed;
+                    root.cardwireInfo = match ? match[1] : trimmed;
+                }
+            }
+        }
+    }
+
+    // `cardwire get` prints "Current Mode: X" then "Available Mode: a, b, c"
+    Process {
+        id: procCardwireGet
+        command: ["cardwire", "get"]
+        stdout: SplitParser {
+            onRead: line => {
+                var trimmed = line.trim();
+                var match = trimmed.match(/current\s+mode:\s*(\S+)/i);
+                if (match) {
+                    root.cardwireMode = match[1].toLowerCase();
+                    return;
+                }
+                match = trimmed.match(/available\s+modes?:\s*(.+)/i);
+                if (match)
+                    root.supportedCardwireModes = match[1].split(/,\s*/).map(m => m.trim().toLowerCase()).filter(m => m.length > 0);
+            }
+        }
+    }
+
+    Process {
+        id: procCardwireSet
+        command: ["cardwire", "set", "hybrid"]
+        stderr: SplitParser {
+            onRead: line => ToastService.showError("cardwire Error", line)
+        }
+        onExited: code => {
+            if (code === 0)
+                ToastService.showInfo("GPU", "cardwire mode set to " + procCardwireSet.command[2]);
+            procCardwireGet.running = true;
+        }
+    }
+
+    // ---------------- sysfs processes ----------------
+
+    Process {
+        id: procPowerUsage
+        command: ["sh", Qt.resolvedUrl("get-power-usage.sh").toString().replace("file://", "")]
+        stdout: SplitParser {
+            onRead: data => {
+                var trimmed = data.trim();
+                root.batteryWattage = trimmed;
+                root.hasBattery = trimmed !== "N/A" && trimmed.length > 0;
+            }
+        }
+        onExited: code => {
+            if (code === 1)
+                root.hasBattery = false;
+        }
+    }
+
+    Process {
+        id: procBatteryStatus
+        command: ["sh", Qt.resolvedUrl("get-battery-status.sh").toString().replace("file://", "")]
+        stdout: SplitParser {
+            onRead: line => {
+                var parts = line.trim().split(/\s+/);
+                if (parts.length >= 4) {
+                    root.acOnline = parts[0];
+                    root.batStatus = parts[1];
+                    root.batteryLevel = parseInt(parts[2]) || 0;
+                    root.batteryHealthPct = parseInt(parts[3]);
                 }
             }
         }
     }
 
     Process {
-        id: procArmouryList
-        command: ["asusctl", "armoury", "list"]
-        onRunningChanged: {
-            if (!running) {
-                root.panelOverdriveAvailable = root.panelOverdriveMatched;
-                root.screenAutoBrightnessAvailable = root.screenAutoBrightnessMatched;
-            }
-        }
+        id: procDgpu
+        command: ["sh", Qt.resolvedUrl("get-dgpu-state.sh").toString().replace("file://", ""), root.pciAddr]
         stdout: SplitParser {
             onRead: line => {
-                var trimmed = line.trim();
-                var name = trimmed.split(':')[0].trim();
-                if (name === "panel_overdrive") {
-                    root.panelOverdriveMatched = true;
-                }
-                if (name === "screen_auto_brightness") {
-                    root.screenAutoBrightnessMatched = true;
+                var parts = line.trim().split(/\s+/);
+                if (parts.length >= 4) {
+                    root.dgpuAddr = parts[0];
+                    root.dgpuState = parts[1];
+                    root.gpuRuntimeStatus = parts[2];
+                    root.gpuPowerControl = parts[3];
                 }
             }
+        }
+        onExited: code => {
+            if (code !== 0)
+                root.dgpuState = "...";
         }
     }
 
+    // ---------------- scheduling ----------------
+
+    function refresh() {
+        procPowerUsage.running = true;
+        procBatteryStatus.running = true;
+        procDgpu.running = true;
+        if (root.asusCtlAvailable) {
+            procPowerGet.running = true;
+            procBatteryLimitGet.running = true;
+        }
+        if (root.cardwireAvailable)
+            procCardwireGet.running = true;
+    }
+
     Timer {
-        interval: 3000
+        interval: root.refreshInterval
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: {
-            procPowerGet.running = true;
-            procGpuGet.running = true;
-            procBatteryGet.running = true;
-            procBatteryLimitGet.running = true;
-            procPanelOverdriveGet.running = true;
-            procScreenAutoBrightnessGet.running = true;
-        }
+        onTriggered: root.refresh()
     }
 
     Component.onCompleted: {
-        procGpuList.running = true;
-        procProfileList.running = true;
-        procBatteryGet.running = true;
-        procBatteryLimitGet.running = true;
         procAsusCtlInfo.running = true;
-        procSupergfxCtlInfo.running = true;
-        procUpowerInfo.running = true;
-        procPanelOverdriveGet.running = true;
-        procScreenAutoBrightnessGet.running = true;
-        procArmouryList.running = true;
+        procCardwireInfo.running = true;
+        procProfileList.running = true;
+        procPowerGet.running = true;
+        procBatteryLimitGet.running = true;
+        procCardwireGet.running = true;
     }
 
+    // ---------------- actions ----------------
+
     function setPowerProfile(name) {
+        if (name === root.activeProfile || procPowerSet.running)
+            return;
         procPowerSet.command = ["asusctl", "profile", "set", name];
         procPowerSet.running = true;
         root.activeProfile = name;
     }
 
-    function setGpuMode(mode) {
-        if (mode === root.activeGpuMode)
+    function setCardwireMode(mode) {
+        if (mode === root.cardwireMode || procCardwireSet.running)
             return;
-        if (procGpuSet.running)
-            return;
-        procGpuSet.command = ["supergfxctl", "-m", mode];
-        procGpuSet.running = true;
+        procCardwireSet.command = ["cardwire", "set", mode];
+        procCardwireSet.running = true;
+        root.cardwireMode = mode;
     }
 
     function setBatteryLimit(limit) {
-        if (limit < 20 || limit > 100)
-            return;
-        if (procBatteryLimitSet.running)
+        if (limit < 20 || limit > 100 || procBatteryLimitSet.running)
             return;
         procBatteryLimitSet.command = ["asusctl", "battery", "limit", limit.toString()];
         procBatteryLimitSet.running = true;
@@ -462,100 +312,220 @@ PluginComponent {
         procBatteryOneShot.running = true;
     }
 
-    function togglePanelOverdrive() {
-        if (procPanelOverdriveSet.running)
-            return;
-        root.panelOverdriveStash = !root.panelOverdriveStash;
-        procPanelOverdriveSet.command = ["asusctl", "armoury", "set", "panel_overdrive", root.panelOverdriveStash ? "1" : "0"];
-        procPanelOverdriveSet.running = true;
-    }
+    // ---------------- presentation helpers ----------------
 
-    function toggleScreenAutoBrightness() {
-        if (procScreenAutoBrightnessSet.running)
-            return;
-        root.screenAutoBrightnessStash = !root.screenAutoBrightnessStash;
-        procScreenAutoBrightnessSet.command = ["asusctl", "armoury", "set", "screen_auto_brightness", root.screenAutoBrightnessStash ? "1" : "0"];
-        procScreenAutoBrightnessSet.running = true;
-    }
-
-    function getModeColor(modeName) {
-        if (modeName === "Performance")
-            return root.colorPerf;
-        if (modeName === "Quiet")
-            return root.colorQuiet;
-        return root.colorBal;
-    }
-
-    function getModeIcon(modeName) {
-        if (modeName === "Performance")
+    function profileIcon(name) {
+        if (name === "Performance")
             return "rocket_launch";
-        if (modeName === "Quiet")
+        if (name === "Quiet")
             return "bedtime";
         return "balance";
     }
 
-    function getBatteryStatusFormatted(status) {
-        if (status === "Unknown")
-            return status;
-        return status.charAt(0).toUpperCase() + status.slice(1).replace(/-/g, " ");
+    function capitalize(s) {
+        return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s;
     }
 
-    function getBatteryIcon(status) {
-        if (status === "charging" || status === "pending-charge")
-            return "battery_charging_full";
-        if (status === "fully-charged")
-            return "battery_full";
-        if (status === "discharging" || status === "pending-discharge")
-            return "battery_std";
-        if (status === "empty")
-            return "battery_alert";
-        return "battery_std";
+    readonly property string batteryLabel: {
+        if (!hasBattery)
+            return "No battery";
+        if (isOnACPower && batStatus === "Full")
+            return "Fully charged · Plugged in";
+        if (isOnACPower)
+            return "Charging · Plugged in";
+        if (batStatus === "Discharging")
+            return "On battery";
+        return batStatus;
     }
+
+    readonly property string batteryIcon: {
+        if (!hasBattery)
+            return "battery_unknown";
+        if (isOnACPower || batStatus === "Charging" || batStatus === "Full")
+            return "battery_charging_full";
+        return "battery_6_bar";
+    }
+
+    readonly property string wattageText: {
+        var num = parseFloat(batteryWattage);
+        return isNaN(num) ? "N/A" : num.toFixed(1) + " W";
+    }
+
+    // ---------------- bar pill ----------------
 
     horizontalBarPill: Component {
-        Item {
-            implicitWidth: root.showBatteryIcon ? 70 : Theme.iconSize
-            implicitHeight: Theme.iconSize
-            Row {
-                anchors.centerIn: parent
-                spacing: 4
-                DankIcon {
-                    name: root.showBatteryIcon ? root.getBatteryIcon(root.batteryStatus) : root.getModeIcon(root.activeProfile)
-                    size: root.showBatteryIcon ? 18 : Theme.iconSize * 0.85
-                    color: root.showBatteryIcon ? Theme.surfaceText : root.getModeColor(root.activeProfile)
-                }
-                StyledText {
-                    text: root.batteryLevel + "%"
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceText
-                    visible: root.showBatteryIcon
-                    anchors.verticalCenter: parent.verticalCenter
-                }
+        Row {
+            spacing: Theme.spacingXS
+            anchors.verticalCenter: parent.verticalCenter
+
+            DankIcon {
+                name: root.profileIcon(root.activeProfile)
+                size: Theme.iconSizeSmall
+                color: Theme.primary
+                anchors.verticalCenter: parent.verticalCenter
+            }
+            StyledText {
+                text: root.wattageText
+                font.pixelSize: Theme.fontSizeSmall
+                font.weight: Font.Medium
+                color: Theme.surfaceText
+                visible: root.showWattage && root.hasBattery
+                anchors.verticalCenter: parent.verticalCenter
+            }
+            StyledText {
+                text: "│"
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceTextMedium
+                visible: root.showWattage && root.hasBattery && root.showDgpuState && root.dgpuKnown
+                anchors.verticalCenter: parent.verticalCenter
+            }
+            StyledText {
+                text: root.dgpuState
+                font.pixelSize: Theme.fontSizeSmall
+                font.weight: Font.Medium
+                color: root.dgpuColor
+                visible: root.showDgpuState && root.dgpuKnown
+                anchors.verticalCenter: parent.verticalCenter
             }
         }
     }
 
+    verticalBarPill: Component {
+        Column {
+            spacing: Theme.spacingXS
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+
+            DankIcon {
+                name: root.profileIcon(root.activeProfile)
+                size: Theme.iconSizeSmall
+                color: Theme.primary
+                anchors.horizontalCenter: parent.horizontalCenter
+            }
+            StyledText {
+                text: root.wattageText
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceText
+                visible: root.showWattage && root.hasBattery
+                anchors.horizontalCenter: parent.horizontalCenter
+            }
+            StyledText {
+                text: root.dgpuState
+                font.pixelSize: Theme.fontSizeSmall
+                color: root.dgpuColor
+                visible: root.showDgpuState && root.dgpuKnown
+                anchors.horizontalCenter: parent.horizontalCenter
+            }
+        }
+    }
+
+    // ---------------- popout ----------------
+
     popoutWidth: 400
     popoutHeight: Math.max(200, contentWrapper.implicitHeight + 60)
+
+    // Section label, GNOME preferences-group style
+    component SectionLabel: StyledText {
+        font.pixelSize: Theme.fontSizeMedium
+        font.weight: Font.Medium
+        color: Theme.surfaceTextMedium
+        leftPadding: Theme.spacingS
+    }
+
+    // Two-line stat tile
+    component StatCard: StyledRect {
+        property string label: ""
+        property string value: ""
+        property color valueColor: Theme.surfaceText
+        height: 64
+        radius: Theme.cornerRadius
+        color: Theme.nestedSurface
+        border.width: 0
+
+        Column {
+            anchors.centerIn: parent
+            spacing: Theme.spacingXS
+
+            StyledText {
+                text: label
+                font.pixelSize: Theme.fontSizeSmall
+                font.weight: Font.Medium
+                color: Theme.primary
+                anchors.horizontalCenter: parent.horizontalCenter
+            }
+            StyledText {
+                text: value
+                font.pixelSize: Theme.fontSizeLarge
+                font.weight: Font.Bold
+                color: valueColor
+                anchors.horizontalCenter: parent.horizontalCenter
+            }
+        }
+    }
+
+    // Icon + headline + subtitle row heading a section
+    component StatusRow: Row {
+        property string icon: ""
+        property color iconColor: Theme.surfaceText
+        property string headline: ""
+        property color headlineColor: Theme.primary
+        property string tag: ""
+        property color tagColor: Theme.surfaceTextMedium
+        property string subtitle: ""
+        width: parent.width
+        spacing: Theme.spacingM
+
+        DankIcon {
+            name: icon
+            size: Theme.iconSizeLarge
+            color: iconColor
+            anchors.verticalCenter: parent.verticalCenter
+        }
+        Column {
+            width: parent.width - Theme.iconSizeLarge - Theme.spacingM
+            spacing: 2
+            anchors.verticalCenter: parent.verticalCenter
+
+            Row {
+                spacing: Theme.spacingS
+                StyledText {
+                    text: headline
+                    font.pixelSize: Theme.fontSizeXLarge
+                    font.weight: Font.Bold
+                    color: headlineColor
+                }
+                StyledText {
+                    text: tag
+                    font.pixelSize: Theme.fontSizeMedium
+                    font.weight: Font.Medium
+                    color: tagColor
+                    visible: tag.length > 0
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+            StyledText {
+                width: parent.width
+                text: subtitle
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceTextMedium
+                wrapMode: Text.WordWrap
+                elide: Text.ElideRight
+            }
+        }
+    }
 
     popoutContent: Component {
         PopoutComponent {
             id: popup
-            headerText: "Dank ASUS Control"
+            headerText: "ASUS Control"
+            showCloseButton: true
 
-            function onOpened() {
-                procPowerGet.running = true;
-                procGpuGet.running = true;
-                procGpuList.running = true;
-                procProfileList.running = true;
-                procBatteryGet.running = true;
-                procBatteryLimitGet.running = true;
+            // Content is re-created each time the popout opens
+            Component.onCompleted: {
                 procAsusCtlInfo.running = true;
-                procSupergfxCtlInfo.running = true;
-                procUpowerInfo.running = true;
-                procPanelOverdriveGet.running = true;
-                procScreenAutoBrightnessGet.running = true;
-                procArmouryList.running = true;
+                procCardwireInfo.running = true;
+                procProfileList.running = true;
+                root.refresh();
             }
 
             Item {
@@ -566,417 +536,226 @@ PluginComponent {
                 Column {
                     id: mainCol
                     width: parent.width
-                    spacing: Theme.spacingM
+                    spacing: Theme.spacingL
 
-                    // Information section
-                    StyledText {
-                        text: "Information"
-                        font.pixelSize: Theme.fontSizeMedium
-                        font.weight: Font.Bold
-                        color: Theme.surfaceVariantText
-                        visible: !root.upowerInfo.includes("MISSING")
-                    }
-                    Row {
+                    // Battery
+                    Column {
                         width: parent.width
                         spacing: Theme.spacingS
-                        visible: !root.upowerInfo.includes("MISSING")
+                        visible: root.hasBattery
 
-                        DankIcon {
-                            name: "info"
-                            size: 20
-                            color: Theme.surfaceText
-                            anchors.verticalCenter: parent.verticalCenter
+                        SectionLabel { text: "Battery" }
+
+                        StatusRow {
+                            icon: root.batteryIcon
+                            iconColor: root.isOnACPower ? Theme.primary : Theme.surfaceText
+                            headline: root.batteryLevel + "%"
+                            subtitle: root.batteryLabel
                         }
 
-                        StyledText {
-                            text: "Status: " + root.getBatteryStatusFormatted(root.batteryStatus)
-                            font.pixelSize: Theme.fontSizeMedium
-                            color: Theme.surfaceText
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-                    Row {
-                        width: parent.width
-                        spacing: Theme.spacingM
-                        visible: !root.upowerInfo.includes("MISSING")
-
-                        Column {
-                            spacing: 2
-                            StyledText {
-                                text: "Percentage"
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                            }
-                            StyledText {
-                                text: root.batteryLevel + "%"
-                                font.pixelSize: Theme.fontSizeMedium
-                                color: Theme.surfaceText
-                            }
-                        }
-                        Column {
-                            spacing: 2
-                            StyledText {
-                                text: "Capacity"
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                            }
-                            StyledText {
-                                text: Math.round(root.batteryCapacity) + "%"
-                                font.pixelSize: Theme.fontSizeMedium
-                                color: Theme.surfaceText
-                            }
-                        }
-                        Column {
-                            spacing: 2
-                            StyledText {
-                                text: "Voltage"
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                            }
-                            StyledText {
-                                text: root.batteryVoltage.toFixed(2) + " V"
-                                font.pixelSize: Theme.fontSizeMedium
-                                color: Theme.surfaceText
-                            }
-                        }
-                    }
-                    Row {
-                        width: parent.width
-                        spacing: Theme.spacingM
-                        visible: !root.upowerInfo.includes("MISSING") && root.batteryEnergy > 0
-
-                        Column {
-                            spacing: 2
-                            StyledText {
-                                text: "Current"
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                            }
-                            StyledText {
-                                text: root.batteryEnergy.toFixed(1) + " Wh"
-                                font.pixelSize: Theme.fontSizeMedium
-                                color: Theme.surfaceText
-                            }
-                        }
-                        Column {
-                            spacing: 2
-                            StyledText {
-                                text: "Full"
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                            }
-                            StyledText {
-                                text: root.batteryEnergyFull.toFixed(1) + " Wh"
-                                font.pixelSize: Theme.fontSizeMedium
-                                color: Theme.surfaceText
-                            }
-                        }
-                        Column {
-                            spacing: 2
-                            StyledText {
-                                text: "Design"
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                            }
-                            StyledText {
-                                text: root.batteryEnergyDesign.toFixed(1) + " Wh"
-                                font.pixelSize: Theme.fontSizeMedium
-                                color: Theme.surfaceText
-                            }
-                        }
-                    }
-
-                    // Separator
-                    Rectangle {
-                        width: parent.width
-                        height: 1
-                        color: Theme.outlineVariant
-                        opacity: 0.5
-                        visible: !root.upowerInfo.includes("MISSING") || !root.supergfxCtlInfo.includes("MISSING")
-                    }
-
-
-                    StyledText {
-                        text: "Power Profile"
-                        font.pixelSize: Theme.fontSizeMedium
-                        font.weight: Font.Bold
-                        color: Theme.surfaceVariantText
-                        visible: !root.asusCtlInfo.includes("MISSING")
-                    }
-                    Row {
-                        spacing: Theme.spacingS
-                        width: parent.width
-                        visible: !root.asusCtlInfo.includes("MISSING")
-
-                        Repeater {
-                            id: profileRepeater
-                            model: root.supportedPowerProfiles.length > 0 ? root.supportedPowerProfiles : ["Quiet", "Balanced", "Performance"]
-
-                            StyledRect {
-                                width: (parent.width - (Theme.spacingS * (profileRepeater.count - 1))) / profileRepeater.count
-                                height: 70
-                                radius: Theme.cornerRadius
-
-                                color: root.activeProfile === modelData ? Theme.surfaceContainerHigh : Theme.surfaceContainerLow
-                                border.width: root.activeProfile === modelData ? 2 : 0
-                                border.color: root.getModeColor(modelData)
-
-                                Column {
-                                    anchors.centerIn: parent
-                                    spacing: 4
-
-                                    DankIcon {
-                                        name: root.getModeIcon(modelData)
-                                        size: 20
-                                        color: root.getModeColor(modelData)
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                    }
-
-                                    StyledText {
-                                        text: modelData
-                                        font.pixelSize: Theme.fontSizeSmall
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                    }
-                                }
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.setPowerProfile(modelData)
-                                }
-                            }
-                        }
-                    }
-
-                    StyledText {
-                        text: "Battery Charge Limit"
-                        font.pixelSize: Theme.fontSizeMedium
-                        font.weight: Font.Bold
-                        color: Theme.surfaceVariantText
-                        visible: !root.asusCtlInfo.includes("MISSING")
-                    }
-                    Row {
-                        width: parent.width
-                        spacing: Theme.spacingS
-                        visible: !root.asusCtlInfo.includes("MISSING")
-
-                        DankSlider {
-                            width: parent.width - 80
-                            value: root.batteryLimit
-                            minimum: 20
-                            maximum: 100
-                            step: 5
-                            unit: "%"
-                            leftIcon: "battery_std"
-                            rightIcon: "battery_charging_full"
-                            onSliderDragFinished: finalValue => root.setBatteryLimit(finalValue)
-                        }
-                        StyledText {
-                            text: root.batteryLimit + "%"
-                            font.pixelSize: Theme.fontSizeMedium
-                            color: Theme.surfaceText
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 50
-                            horizontalAlignment: Text.AlignRight
-                        }
-                    }
-                    Row {
-                        width: parent.width
-                        spacing: Theme.spacingS
-                        visible: !root.asusCtlInfo.includes("MISSING")
-
-                        StyledRect {
+                        Row {
                             width: parent.width
-                            height: 36
-                            radius: Theme.cornerRadius
-                            color: Theme.surfaceContainerLow
+                            spacing: Theme.spacingM
 
-                            Row {
-                                anchors.centerIn: parent
-                                spacing: Theme.spacingS
+                            StatCard {
+                                width: (parent.width - Theme.spacingM) / 2
+                                label: "Power"
+                                value: root.wattageText
+                            }
+                            StatCard {
+                                width: (parent.width - Theme.spacingM) / 2
+                                label: "Health"
+                                value: root.batteryHealthPct > 0 ? root.batteryHealthPct + "%" : "N/A"
+                                valueColor: root.batteryHealthPct > 0 && root.batteryHealthPct < 80 ? Theme.error : Theme.surfaceText
+                            }
+                        }
+                    }
+
+                    // Power profile
+                    Column {
+                        width: parent.width
+                        spacing: Theme.spacingS
+                        visible: root.asusCtlAvailable
+
+                        SectionLabel { text: "Power Profile" }
+
+                        Row {
+                            id: profileRow
+                            width: parent.width
+                            spacing: Theme.spacingS
+
+                            Repeater {
+                                id: profileRepeater
+                                model: root.supportedPowerProfiles.length > 0 ? root.supportedPowerProfiles : ["Quiet", "Balanced", "Performance"]
+
+                                StyledRect {
+                                    required property string modelData
+                                    readonly property bool active: root.activeProfile === modelData
+                                    width: (profileRow.width - Theme.spacingS * (profileRepeater.count - 1)) / profileRepeater.count
+                                    height: 64
+                                    radius: Theme.cornerRadius
+                                    color: active ? Theme.primary : Theme.nestedSurface
+                                    border.width: 0
+
+                                    Column {
+                                        anchors.centerIn: parent
+                                        spacing: 4
+
+                                        DankIcon {
+                                            name: root.profileIcon(modelData)
+                                            size: 20
+                                            color: active ? Theme.primaryText : Theme.surfaceText
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                        }
+                                        StyledText {
+                                            text: modelData
+                                            font.pixelSize: Theme.fontSizeSmall
+                                            font.weight: active ? Font.Medium : Font.Normal
+                                            color: active ? Theme.primaryText : Theme.surfaceText
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.setPowerProfile(modelData)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // GPU
+                    Column {
+                        width: parent.width
+                        spacing: Theme.spacingS
+                        visible: root.dgpuKnown || root.cardwireAvailable
+
+                        SectionLabel { text: "GPU" }
+
+                        StatusRow {
+                            visible: root.dgpuKnown
+                            icon: "developer_board"
+                            iconColor: root.dgpuColor
+                            headline: root.dgpuState
+                            headlineColor: root.dgpuIdle ? Theme.primary : root.dgpuColor
+                            tag: root.dgpuIdle ? "Idle" : "Active"
+                            tagColor: root.dgpuColor
+                            subtitle: (root.dgpuIdle ? "Suspended" : "Active, drawing power") + " · " + root.dgpuAddr
+                        }
+
+                        Row {
+                            width: parent.width
+                            spacing: Theme.spacingM
+                            visible: root.dgpuKnown
+
+                            StatCard {
+                                width: (parent.width - Theme.spacingM) / 2
+                                label: "Runtime"
+                                value: root.gpuRuntimeStatus !== "..." ? root.capitalize(root.gpuRuntimeStatus) : "N/A"
+                                valueColor: root.gpuRuntimeStatus === "active" ? root.dgpuColor : Theme.surfaceText
+                            }
+                            StatCard {
+                                width: (parent.width - Theme.spacingM) / 2
+                                label: "Power Control"
+                                value: root.gpuPowerControl !== "..." ? root.capitalize(root.gpuPowerControl) : "N/A"
+                                valueColor: root.gpuPowerControl === "auto" || root.gpuPowerControl === "..." ? Theme.surfaceText : Theme.warning
+                            }
+                        }
+
+                        Item {
+                            width: parent.width
+                            height: cwButtons.height * cwButtons.scale
+                            visible: root.cardwireAvailable
+
+                            DankButtonGroup {
+                                id: cwButtons
+                                property var modeModel: root.supportedCardwireModes.length > 0 ? root.supportedCardwireModes.map(root.capitalize) : ["Integrated", "Hybrid"]
+                                scale: Math.min(1, parent.width / implicitWidth)
+                                transformOrigin: Item.Center
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                model: modeModel
+                                currentIndex: root.supportedCardwireModes.indexOf(root.cardwireMode)
+                                selectionMode: "single"
+                                buttonHeight: 42
+                                minButtonWidth: 80
+                                textSize: Theme.fontSizeMedium
+                                onSelectionChanged: (index, selected) => {
+                                    if (selected)
+                                        root.setCardwireMode(root.supportedCardwireModes[index]);
+                                }
+                            }
+                        }
+                    }
+
+                    // Charge limit
+                    Column {
+                        width: parent.width
+                        spacing: Theme.spacingS
+                        visible: root.asusCtlAvailable && root.hasBattery
+
+                        SectionLabel { text: "Charge Limit" }
+
+                        Row {
+                            width: parent.width
+                            spacing: Theme.spacingS
+
+                            DankSlider {
+                                width: parent.width - 48 - 44 - Theme.spacingS * 2
+                                value: root.batteryLimit
+                                minimum: 20
+                                maximum: 100
+                                step: 5
+                                unit: "%"
+                                leftIcon: "battery_std"
+                                rightIcon: "battery_charging_full"
+                                anchors.verticalCenter: parent.verticalCenter
+                                onSliderDragFinished: finalValue => root.setBatteryLimit(finalValue)
+                            }
+                            StyledText {
+                                width: 44
+                                text: root.batteryLimit + "%"
+                                font.pixelSize: Theme.fontSizeMedium
+                                color: Theme.surfaceText
+                                horizontalAlignment: Text.AlignRight
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            // One-shot: charge to 100% once, then the limit resumes
+                            StyledRect {
+                                width: 48
+                                height: 36
+                                radius: Theme.cornerRadius
+                                color: oneShotArea.containsMouse ? Theme.surfaceContainerHigh : Theme.nestedSurface
+                                anchors.verticalCenter: parent.verticalCenter
 
                                 DankIcon {
                                     name: "bolt"
-                                    size: 18
+                                    size: 20
                                     color: Theme.primary
-                                    anchors.verticalCenter: parent.verticalCenter
-                                }
-
-                                StyledText {
-                                    text: "One Shot"
-                                    font.pixelSize: Theme.fontSizeMedium
-                                    color: Theme.surfaceText
-                                    anchors.verticalCenter: parent.verticalCenter
-                                }
-                            }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.triggerOneShot()
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        width: parent.width
-                        height: 1
-                        color: Theme.outlineVariant
-                        opacity: 0.5
-                        visible: !root.supergfxCtlInfo.includes("MISSING") || (!root.asusCtlInfo.includes("MISSING") && (root.panelOverdriveAvailable || root.screenAutoBrightnessAvailable))
-                    }
-
-                    StyledText {
-                        text: "Display"
-                        font.pixelSize: Theme.fontSizeMedium
-                        font.weight: Font.Bold
-                        color: Theme.surfaceVariantText
-                        visible: !root.asusCtlInfo.includes("MISSING") && (root.panelOverdriveAvailable || root.screenAutoBrightnessAvailable)
-                    }
-                    Row {
-                        width: parent.width
-                        spacing: Theme.spacingS
-                        visible: !root.asusCtlInfo.includes("MISSING") && root.panelOverdriveAvailable
-
-                        StyledText {
-                            text: "Panel Overdrive"
-                            font.pixelSize: Theme.fontSizeMedium
-                            color: Theme.surfaceText
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Item {
-                            width: 1
-                            height: 1
-                        }
-                        DankIcon {
-                            name: root.panelOverdriveStash ? "toggle_on" : "toggle_off"
-                            size: 24
-                            color: Theme.primary
-                            anchors.verticalCenter: parent.verticalCenter
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.togglePanelOverdrive()
-                            }
-                        }
-                    }
-                    Row {
-                        width: parent.width
-                        spacing: Theme.spacingS
-                        visible: !root.asusCtlInfo.includes("MISSING") && root.screenAutoBrightnessAvailable
-
-                        StyledText {
-                            text: "Screen Auto Brightness"
-                            font.pixelSize: Theme.fontSizeMedium
-                            color: Theme.surfaceText
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Item {
-                            width: 1
-                            height: 1
-                        }
-                        DankIcon {
-                            name: root.screenAutoBrightnessStash ? "toggle_on" : "toggle_off"
-                            size: 24
-                            color: Theme.primary
-                            anchors.verticalCenter: parent.verticalCenter
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.toggleScreenAutoBrightness()
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        width: parent.width
-                        height: 1
-                        color: Theme.outlineVariant
-                        opacity: 0.5
-                        visible: !root.supergfxCtlInfo.includes("MISSING")
-                    }
-                    StyledText {
-                        text: "GPU Mode"
-                        font.pixelSize: Theme.fontSizeMedium
-                        font.weight: Font.Bold
-                        color: Theme.surfaceVariantText
-                        visible: !root.supergfxCtlInfo.includes("MISSING")
-                    }
-                    // GPU Mode warning
-                    StyledText {
-                        width: parent.width
-                        text: "Switching GPU mode will trigger an immediate logout."
-                        font.pixelSize: Theme.fontSizeMedium
-                        color: Theme.error
-                        wrapMode: Text.WordWrap
-                        horizontalAlignment: Text.AlignHCenter
-                        visible: !root.supergfxCtlInfo.includes("MISSING")
-                    }
-                    Flow {
-                        width: parent.width
-                        spacing: Theme.spacingS
-                        visible: !root.supergfxCtlInfo.includes("MISSING")
-
-                        Repeater {
-                            model: root.supportedGpuModes
-
-                            StyledRect {
-                                width: (mainCol.width / 2) - Theme.spacingS
-                                height: 45
-                                radius: Theme.cornerRadius
-
-                                color: root.activeGpuMode === modelData ? root.colorGpu : Theme.surfaceContainerLow
-
-                                Row {
                                     anchors.centerIn: parent
-                                    spacing: Theme.spacingS
-
-                                    DankIcon {
-                                        name: "memory"
-                                        size: 18
-                                        color: root.activeGpuMode === modelData ? Theme.base : Theme.surfaceText
-                                    }
-
-                                    StyledText {
-                                        text: modelData
-                                        color: root.activeGpuMode === modelData ? Theme.base : Theme.surfaceText
-                                        font.weight: root.activeGpuMode === modelData ? Font.Bold : Font.Normal
-                                    }
                                 }
-
                                 MouseArea {
+                                    id: oneShotArea
                                     anchors.fill: parent
+                                    hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.setGpuMode(modelData)
+                                    onClicked: root.triggerOneShot()
                                 }
                             }
                         }
+                    }
+
+                    // Footer
+                    StyledText {
+                        width: parent.width
+                        text: "asusctl " + (root.asusCtlInfo || "…") + "   ·   cardwire " + (root.cardwireInfo || "…")
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: (root.asusCtlInfo === "MISSING" || root.cardwireInfo === "MISSING") ? Theme.error : Theme.surfaceTextMedium
+                        horizontalAlignment: Text.AlignRight
                     }
                 }
-            }
-            // Version and installation status
-            Rectangle {
-                width: parent.width
-                height: 1
-                color: Theme.outlineVariant
-                opacity: 0.5
-            }
-            // Spacing before version info
-            Rectangle {
-                width: parent.width
-                height: Theme.spacingM
-                color: "transparent"
-            }
-            StyledText {
-                width: parent.width
-                // Show each tool version on its own line with a label
-                text: "asusctl: " + root.asusCtlInfo + "\n" + "supergfxctl: " + root.supergfxCtlInfo + "\n" + "upower: " + root.upowerInfo
-                font.pixelSize: Theme.fontSizeSmall
-                // If any tool is missing, show error color
-                color: (root.asusCtlInfo.includes("MISSING") && root.supergfxCtlInfo.includes("MISSING") && root.upowerInfo.includes("MISSING")) ? Theme.error : Theme.surfaceText
-                wrapMode: Text.WordWrap
-                horizontalAlignment: Text.AlignRight
-                visible: true
             }
         }
     }
