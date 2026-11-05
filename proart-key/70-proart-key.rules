@@ -1,0 +1,2 @@
+# Let the input group read the ITE keyboard's raw HID reports (ProArt key)
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="19b6", GROUP="input", MODE="0640"

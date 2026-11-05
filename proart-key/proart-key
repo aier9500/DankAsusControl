@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+# ProArt key → toggle the Dank ASUS Control popout.
+# The key is hidraw report 5a 8b on the ITE keyboard; hid-asus leaves it unmapped,
+# so no evdev/keyd/compositor bind can see it.
+import glob, os, subprocess
+
+KBD_HID_ID = "HID_ID=0003:00000B05:000019B6"
+ACTION = ["dms", "ipc", "call", "widget", "toggle", "dankAsusControlCenter"]
+
+dev = next(
+    "/dev/" + p.split("/")[4]
+    for p in glob.glob("/sys/class/hidraw/*/device/uevent")
+    if KBD_HID_ID in open(p).read()
+)
+fd = os.open(dev, os.O_RDONLY)
+while True:
+    if os.read(fd, 64)[:2] == b"\x5a\x8b":
+        subprocess.Popen(ACTION, start_new_session=True)

@@ -29,7 +29,8 @@ The ⚡ button next to the slider is **One Shot**: charge to 100% once, then the
 
 ## Requirements
 
-- [asusctl](https://github.com/OpenGamingCollective/asusctl) with `asusd` running.
+- [asusctl](https://github.com/OpenGamingCollective/asusctl) with `asusd` running. Fedora steps:
+  [ASUS Laptop Control](https://tuxies-wiki.theoryy.dev/guides/asusctl/).
 - [cardwire](https://github.com/OpenGamingCollective/cardwire) for GPU mode switching
   (optional; the section hides without it). `supergfxctl` is not supported — it is archived.
 
@@ -59,3 +60,13 @@ dms ipc call widget toggle dankAsusControlCenter
 ```
 
 Bind that to any key or hardware button.
+
+### ProArt key
+
+The ProArt P16 (2025) key next to power sends a report the kernel doesn't map, so no keybind sees it. `proart-key/` reads the raw keyboard report and runs the toggle above:
+
+```bash
+~/.config/DankMaterialShell/plugins/dankAsusControlCenter/proart-key/install.sh
+```
+
+It installs a udev rule (asks for sudo), `~/.local/bin/proart-key` and the `proart-key` user service. Other ASUS models need their own keyboard IDs; see the [ProArt P16 guide](https://tuxies-wiki.theoryy.dev/guides/proart-p16-2025/).

@@ -1,0 +1,12 @@
+[Unit]
+Description=ProArt key toggles Dank ASUS Control
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/proart-key
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
