@@ -69,4 +69,6 @@ The ProArt P16 (2025) key next to power sends a report the kernel doesn't map, s
 ~/.config/DankMaterialShell/plugins/dankAsusControlCenter/proart-key/install.sh
 ```
 
-It installs a udev rule (asks for sudo), `~/.local/bin/proart-key` and the `proart-key` user service. Other ASUS models need their own keyboard IDs; see the [ProArt P16 guide](https://tuxies-wiki.theoryy.dev/guides/proart-p16-2025/).
+It installs a udev rule (asks for sudo), `~/.local/bin/proart-key` and the `proart-key` user service.
+
+Other ASUS models need their own keyboard IDs. Run `grep HID_ID /sys/class/hidraw/*/device/uevent`, take the entry whose `HID_NAME` says `ITE`, and swap its IDs into `proart-key/70-proart-key.rules` (`idProduct`) and `proart-key/proart-key` (`KBD_HID_ID`) before installing.

@@ -8,6 +8,10 @@
 
 ## Changes
 
+- **ProArt key docs live here only (2026-11-11)** — README section is self-contained: the
+  other-model ID tip moved in from the wiki, and the wiki link dropped. The wiki no longer covers
+  the key or this plugin.
+
 - **ProArt key (2026-11-04)** — `proart-key/` moved in from hypr-dms: the ProArt P16 key toggles
   the popout via a `hidraw` listener. README section + one-command `install.sh`.
 
